@@ -103,7 +103,7 @@ lnk_file_open_with_rename_permissions(String8 path)
 
   scratch_end(scratch);
 #else
-# error "TODO: file rename"
+  file_handle = os_file_open(OS_AccessFlag_Read|OS_AccessFlag_Write, path);
 #endif
   return file_handle;
 }
@@ -111,10 +111,13 @@ lnk_file_open_with_rename_permissions(String8 path)
 internal B32
 lnk_file_set_delete_on_close(OS_Handle handle, B32 delete_file)
 {
+  B32 is_set = 0;
 #if OS_WINDOWS
   FILE_DISPOSITION_INFO file_disposition = {0};
   file_disposition.DeleteFile            = (BOOL)delete_file;
-  B32 is_set = SetFileInformationByHandle((HANDLE)handle.u64[0], FileDispositionInfo, &file_disposition, sizeof(file_disposition));
+  is_set = SetFileInformationByHandle((HANDLE)handle.u64[0], FileDispositionInfo, &file_disposition, sizeof(file_disposition));
+#elif OS_LINUX
+  is_set = 1;
 #else
 # error "TODO: file rename"
 #endif
@@ -125,6 +128,9 @@ internal B32
 lnk_file_rename(OS_Handle handle, String8 new_name)
 {
   Temp scratch = scratch_begin(0,0);
+
+  B32 is_renamed = 0;
+
 #if OS_WINDOWS
   String16 new_name16 = str16_from_8(scratch.arena, new_name);
 
@@ -137,10 +143,22 @@ lnk_file_rename(OS_Handle handle, String8 new_name)
   rename_info->FileNameLength   = new_name16.size * sizeof(new_name16.str[0]);
   MemoryCopy(rename_info->FileName, new_name16.str, new_name16.size * sizeof(new_name16.str[0]));
 
-  B32 is_renamed = SetFileInformationByHandle((HANDLE)handle.u64[0], FileRenameInfo, buffer, buffer_size);
+  is_renamed = SetFileInformationByHandle((HANDLE)handle.u64[0], FileRenameInfo, buffer, buffer_size);
+#elif OS_LINUX
+  char fd_proc_path[128];
+  raddbg_snprintf(fd_proc_path, sizeof(fd_proc_path), "/proc/self/fd/%d", (int)handle.u64[0]);
+
+  U64      path_max  = 4096;
+  char    *path      = push_array(scratch.arena, char, path_max);
+  ssize_t  path_size = readlink(fd_proc_path, path, path_max);
+
+  if (path_size > 0) {
+    is_renamed = rename(path, (char *)push_cstr(scratch.arena, new_name).str) == 0;
+  }
 #else
-#error "TODO: file rename"
+# error "TODO: file rename"
 #endif
+
   scratch_end(scratch);
   return is_renamed;
 }
@@ -198,8 +216,8 @@ internal
 THREAD_POOL_TASK_FUNC(lnk_memory_map_file_task)
 {
   LNK_DiskReader *task = raw_task;
-#if OS_WINDOWS
   Temp scratch = scratch_begin(&arena, 1);
+#if OS_WINDOWS
   String16 path16      = str16_from_8(scratch.arena, task->path_arr.v[task_id]);
   HANDLE   file_handle = CreateFileW(path16.str, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
   if (file_handle != INVALID_HANDLE_VALUE) {
@@ -217,10 +235,23 @@ THREAD_POOL_TASK_FUNC(lnk_memory_map_file_task)
     }
     CloseHandle(file_handle);
   }
-  scratch_end(scratch);
+#elif OS_LINUX
+  int fd = open((char *)push_cstr(scratch.arena, task->path_arr.v[task_id]).str, O_RDONLY);
+  if (fd != -1) {
+    struct stat st = {0};
+    if (fstat(fd, &st) == 0) {
+      void *file_data = mmap(0, st.st_size, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
+      if (file_data != MAP_FAILED) {
+        AsanUnpoisonMemoryRegion(file_data, st.st_size);
+        task->data_arr.v[task_id] = str8(file_data, st.st_size);
+      }
+    }
+    close(fd);
+  }
 #else
 # error "memory mapping files is not supported on this platform"
 #endif
+  scratch_end(scratch);
 }
 
 internal String8Array
