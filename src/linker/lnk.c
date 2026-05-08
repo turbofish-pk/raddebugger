@@ -17,6 +17,7 @@
 // --- Code Base ---------------------------------------------------------------
 
 #include "base/base_inc.h"
+#include "x64/x64.h"
 #include "os/os_inc.h"
 #include "hash_table.h"
 #include "coff/coff.h"
@@ -37,6 +38,7 @@
 #include "llvm/llvm.h"
 
 #include "base/base_inc.c"
+#include "x64/x64.c"
 #include "os/os_inc.c"
 #include "hash_table.c"
 #include "coff/coff.c"
