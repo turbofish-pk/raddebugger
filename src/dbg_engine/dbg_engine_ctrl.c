@@ -5944,7 +5944,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           {
             single_step_ctrls.single_step_thread = thread;
           }
-          DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &single_step_ctrls, 0);
+          event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &single_step_ctrls, 0);
           thread_post_rip = dmn_rip_from_thread(thread);
           switch(event->kind)
           {
@@ -6032,7 +6032,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
             {
               single_step_ctrls.single_step_thread = target_thread.dmn_handle;
             }
-            DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &single_step_ctrls, 0);
+            event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &single_step_ctrls, 0);
             thread_post_rip = dmn_rip_from_thread(target_thread.dmn_handle);
             switch(event->kind)
             {
