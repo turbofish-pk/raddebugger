@@ -234,12 +234,12 @@ dmn_set_trap(Arena *arena, DMN_Trap *trap)
     }
     else
     {
-      Assert(0 && "failed to write trap instruction");
+      fprintf(stderr, "ERROR: failed to write trap instructions to 0x%llx\n", (unsigned long long)trap->vaddr);
     }
   }
   else
   {
-    Assert(0 && "failed to read original byte");
+    fprintf(stderr, "ERROR: failed to read original trap byte from 0x%llx\n", (unsigned long long)trap->vaddr);
   }
   return result;
 }
