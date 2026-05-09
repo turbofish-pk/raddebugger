@@ -1705,6 +1705,7 @@ dmn_lnx_push_event_breakpoint(Arena *arena, DMN_EventList *events, DMN_LNX_Threa
   e->process             = dmn_lnx_handle_from_process(thread->process);
   e->thread              = dmn_lnx_handle_from_thread(thread);
   e->instruction_pointer = address;
+  e->address             = address;
 }
 
 internal void
@@ -1715,6 +1716,7 @@ dmn_lnx_push_event_single_step(Arena *arena, DMN_EventList *events, DMN_LNX_Thre
   e->process             = dmn_lnx_handle_from_process(thread->process);
   e->thread              = dmn_lnx_handle_from_thread(thread);
   e->instruction_pointer = dmn_lnx_thread_read_ip(thread);
+  e->address             = e->instruction_pointer;
 }
 
 internal void
@@ -1762,6 +1764,7 @@ dmn_lnx_push_event_exception(Arena *arena, DMN_EventList *events, DMN_LNX_Thread
   e->process             = dmn_lnx_handle_from_process(thread->process);
   e->thread              = dmn_lnx_handle_from_thread(thread);
   e->instruction_pointer = dmn_lnx_thread_read_ip(thread);
+  e->address             = e->instruction_pointer;
   e->signo               = signo;
   e->exception_repeated  = signo < ArrayCount(is_repeatable) ? is_repeatable[signo] : 0;
   
