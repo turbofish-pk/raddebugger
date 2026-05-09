@@ -877,38 +877,41 @@ os_process_launch(OS_ProcessLaunchParams *params)
 internal B32
 os_process_join(OS_Handle handle, U64 endt_us, U64 *exit_code_out)
 {
-  pid_t pid = (pid_t)handle.u64[0];
   B32 result = 0;
-  if(endt_us == 0)
+
+  pid_t pid = (pid_t)handle.u64[0];
+  for(;;)
   {
-    if(kill(pid, 0) == 0)
+    // wait for an update from process
+    int   status      = 0;
+    pid_t wait_result = OS_LNX_RETRY_ON_EINTR(waitpid(pid, &status, (endt_us == max_U64) ? 0 : WNOHANG));
+
+    // parse status
+    if((wait_result == pid) && (WIFEXITED(status) || WIFSIGNALED(status)))
     {
-      int status;
-      waitpid(pid, &status, WNOHANG);
-    }
-    else { Assert(0 && "failed to get status from pid"); }
-  }
-  else if(endt_us == max_U64)
-  {
-    for(;;)
-    {
-      int status = 0;
-      int w = waitpid(pid, &status, 0);
-      if(w == -1)
+      result = 1;
+      if(exit_code_out != 0)
       {
-        break;
+        if     (WIFEXITED(status))   { *exit_code_out = WEXITSTATUS(status);    } // normal exit, return exit_code
+        else if(WIFSIGNALED(status)) { *exit_code_out = WTERMSIG(status) + 128; } // signal terminated process; use POSIX convention for exit code
       }
-      if(WIFEXITED(status) || WIFSTOPPED(status) || WIFSIGNALED(status))
-      {
-        result = 1;
-        break;
-      }
+      break;
     }
+
+    if(wait_result == -1) { break; } // wait failed
+    if(endt_us == 0)      { break; } // no exit status is available yet
+
+    U64 now_us = os_now_microseconds();
+    if(now_us >= endt_us) { break; } // timeout
+
+    // periodically sleep 
+    //
+    // TODO: on Linux 5.3 and above we can use pidfd_open with poll here
+    U64 left_us  = endt_us - now_us;
+    U64 sleep_us = Min(left_us, Thousand(1));
+    usleep((useconds_t)sleep_us);
   }
-  else
-  {
-    NotImplemented;
-  }
+
   return result;
 }
 
