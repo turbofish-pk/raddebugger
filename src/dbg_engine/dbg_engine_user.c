@@ -608,6 +608,7 @@ d_trap_net_from_thread__step_into_line(Arena *arena, D_Entity *thread)
   if(good_line_info)
   {
     D_ProcessMemorySlice machine_code_slice = d_process_memory_slice_from_vaddr_range(scratch.arena, process->handle, line_vaddr_rng, 0, os_now_microseconds()+5000);
+    AssertAlways(machine_code_slice.stale);
     machine_code = machine_code_slice.data;
     good_machine_code = (machine_code.size >= dim_1u64(line_vaddr_rng) && !machine_code_slice.any_byte_bad);
   }
@@ -1815,6 +1816,7 @@ d_tick(Arena *arena, D_TargetArray *targets, D_BreakpointArray *breakpoints, D_P
                 
                 // rjf: thread => call stack
                 D_CallStack callstack = d_call_stack_from_thread(access, thread->handle, 1, os_now_microseconds()+10000);
+                AssertAlways(callstack.frames_count > 0);
                 
                 // rjf: use first unwind frame to generate trap
                 if(callstack.concrete_frames_count > 1)

@@ -1491,6 +1491,7 @@ d_reg_block_from_thread(Arena *arena, D_EntityCtx *ctx, D_Handle handle)
     {
       if(d_handle_match(n->handle, handle))
       {
+        log_infof("// cache hit for thread %llx\n", handle.dmn_handle.u64[0]);
         node = n;
         break;
       }
@@ -1499,6 +1500,7 @@ d_reg_block_from_thread(Arena *arena, D_EntityCtx *ctx, D_Handle handle)
     // rjf: allocate existing node
     if(!node)
     {
+      log_infof("// cache miss for thread %llx\n", handle.dmn_handle.u64[0]);
       node = push_array(stripe->arena, D_ThreadRegCacheNode, 1);
       DLLPushBack(slot->first, slot->last, node);
       node->handle     = handle;
@@ -3455,6 +3457,7 @@ d_ctrl_thread__entry_point(void *p)
           }break;
         }
       }
+      log_infof("ctrl_thread_run_state: %llu\n", (unsigned long long)d_ctrl_state->ctrl_thread_run_state);
       ins_atomic_u64_eval_assign(&d_ctrl_state->ctrl_thread_run_state, 0);
     }
     ins_atomic_u64_inc_eval(&d_ctrl_state->run_gen);
@@ -3478,7 +3481,9 @@ d_ctrl_thread__entry_point(void *p)
     }
     
     //- rjf: gather & output logs
+    log_infof("// begin log flush\n");
     d_ctrl_thread__end_and_flush_log();
+    log_infof("// end log flush");
   }
   
   scratch_end(scratch);
@@ -4094,6 +4099,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       DMN_EventNode *next_event_node = d_ctrl_state->first_dmn_event_node;
       
       // rjf: log event
+      log_infof("null_debug_event: %d\n", next_event_node != 0);
       if(next_event_node != 0)
       {
         DMN_Event *ev = &next_event_node->v;
@@ -4123,6 +4129,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
           {
             // NOTE(rjf): first chance exceptions -> try ignoring
             should_filter_event = (ev->exception_repeated == 0 && (spoof == 0 || ev->instruction_pointer != spoof->new_ip_value));
+            log_infof("should_filter_exception: %d\n", should_filter_event);
             
             // rjf: exception code -> kind
             D_ExceptionCodeKind code_kind = D_ExceptionCodeKind_Null;
@@ -4132,6 +4139,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
               {
                 if(d_exception_code_kind_code_table[k] == ev->code)
                 {
+                  log_infof("code_kind: %d\n", k);
                   code_kind = k;
                   break;
                 }
@@ -4142,9 +4150,11 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
             if(should_filter_event)
             {
               B32 shouldnt_filter = !!(d_ctrl_state->exception_code_filters[code_kind/64] & (1ull<<(code_kind%64)));
+              log_infof("shouldnt_filter: %d // TODO: rename to discard_filter\n", shouldnt_filter);
               if(should_filter_event && shouldnt_filter)
               {
                 should_filter_event = 0;
+                log_infof("should_filter_event: 0 // override top level filter\n");
               }
             }
             
@@ -4153,6 +4163,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
             if(!should_filter_event && ev->code == 0xc0000005 &&
                (spoof == 0 || ev->instruction_pointer != spoof->new_ip_value))
             {
+              log_infof("detected_asan_exception: 1\n");
               Access *access = access_open();
               D_Entity *process = d_entity_from_handle(entity_ctx, d_handle_make(D_MachineID_Local, ev->process));
               D_Entity *module = &d_entity_nil;
@@ -4227,8 +4238,10 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
         event->string = push_str8_copy(arena, event->string);
         run_ctrls->ignore_previous_exception = 1;
       }
+      log_infof("got_event: %d\n", got_event);
       
       // rjf: good event but filtered? pop from queue
+      log_infof("pop_event_and_reset_previous_exception_flag_to_zero: %d\n", next_event_node != 0 && should_filter_event);
       if(next_event_node != 0 && should_filter_event)
       {
         SLLQueuePop(d_ctrl_state->first_dmn_event_node, d_ctrl_state->last_dmn_event_node);
@@ -4241,19 +4254,26 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
     {
       // rjf: prep spoof
       B32 do_spoof = (spoof != 0 && dmn_handle_match(run_ctrls->single_step_thread, dmn_handle_zero()));
+      log_infof("do_spoof: %d\n", do_spoof);
       U64 size_of_spoof = 0;
       if(do_spoof) ProfScope("prep spoof")
       {
         D_Entity *spoof_process = d_entity_from_handle(entity_ctx, d_handle_make(D_MachineID_Local, spoof->process));
         Arch arch = spoof_process->arch;
         size_of_spoof = bit_size_from_arch(arch)/8;
-        dmn_process_read(spoof_process->handle.dmn_handle, r1u64(spoof->vaddr, spoof->vaddr+size_of_spoof), &spoof_old_ip_value);
+        log_infof("spoof_process_handle: %llu\n", (unsigned long long)spoof_process->handle.dmn_handle.u64[0]);
+        log_infof("spoof_vaddr: %llx\n", (unsigned long long)spoof->vaddr);
+        log_infof("sizeof_spoof: %llx\n", (unsigned long long)size_of_spoof);
+        B32 is_spoof_read = dmn_process_read(spoof_process->handle.dmn_handle, r1u64(spoof->vaddr, spoof->vaddr+size_of_spoof), &spoof_old_ip_value);
+        log_infof("is_spoof_read: %d\n", is_spoof_read);
+        log_infof("spoof_old_ip_value: %d\n", spoof_old_ip_value);
       }
       
       // rjf: set spoof
       if(do_spoof) ProfScope("set spoof")
       {
-        dmn_process_write(spoof->process, r1u64(spoof->vaddr, spoof->vaddr+size_of_spoof), &spoof->new_ip_value);
+        B32 is_spoof_written = dmn_process_write(spoof->process, r1u64(spoof->vaddr, spoof->vaddr+size_of_spoof), &spoof->new_ip_value);
+        log_infof("is_spoof_written: %d\n", is_spoof_written);
       }
       
       // rjf: run for new events
@@ -4280,10 +4300,18 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
           }
         }
         
+        log_infof("// calling dmn_ctrl_run()\n");
         DMN_EventList events = dmn_ctrl_run(scratch.arena, ctrl_ctx, run_ctrls);
+        log_infof("events_count: %d\n", (int)events.count);
+
+        log_infof("mem_gen: %d\n", (int)d_ctrl_state->mem_gen);
+        log_infof("reg_gen: %d\n", (int)d_ctrl_state->reg_gen);
+        log_infof("run_gen: %d\n", (int)d_ctrl_state->run_gen);
         ins_atomic_u64_inc_eval(&d_ctrl_state->mem_gen);
         ins_atomic_u64_inc_eval(&d_ctrl_state->reg_gen);
         ins_atomic_u64_inc_eval(&d_ctrl_state->run_gen);
+
+        // copy events from scratch to d_ctrl_state->dmn_event_arena
         for(DMN_EventNode *src_n = events.first; src_n != 0; src_n = src_n->next)
         {
           DMN_EventNode *dst_n = d_ctrl_state->free_dmn_event_node;
@@ -4304,7 +4332,8 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
       // rjf: unset spoof
       if(do_spoof) ProfScope("unset spoof")
       {
-        dmn_process_write(spoof->process, r1u64(spoof->vaddr, spoof->vaddr+size_of_spoof), &spoof_old_ip_value);
+        B32 is_spoof_unset_ok = dmn_process_write(spoof->process, r1u64(spoof->vaddr, spoof->vaddr+size_of_spoof), &spoof_old_ip_value);
+        log_infof("is_spoof_unset_ok: %d\n", (int)is_spoof_unset_ok);
       }
     }
   }
@@ -4322,12 +4351,14 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
     if(spoof_thread_rip == spoof->new_ip_value)
     {
       regs_arch_block_write_rip(arch, regs_block, spoof_old_ip_value);
-      d_thread_write_reg_block(d_handle_make(D_MachineID_Local, spoof->thread), regs_block);
+      B32 is_old_spoof_ip_restored = d_thread_write_reg_block(d_handle_make(D_MachineID_Local, spoof->thread), regs_block);
+      log_infof("is_old_spoof_ip_restored: %d\n", is_old_spoof_ip_restored);
     }
   }
   
   //- rjf: push ctrl events associated with this demon event
   D_EventList evts = {0};
+  log_infof("event_kind: %S\n", dmn_event_kind_string_table[event->kind]);
   ProfScope("push ctrl events associated with this demon event") switch(event->kind)
   {
     default:{}break;
@@ -4488,6 +4519,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
   
   //- rjf: if this is the first process in a session, clear the debug directory
   // cache state
+  log_infof("clear_debug_directory_cache_state: %d\n", d_ctrl_state->process_counter == 1 && event->kind == DMN_EventKind_CreateProcess);
   if(d_ctrl_state->process_counter == 1 && event->kind == DMN_EventKind_CreateProcess)
   {
     arena_clear(d_ctrl_state->dbg_dir_arena);
@@ -4495,6 +4527,7 @@ d_ctrl_thread__next_dmn_event(Arena *arena, DMN_CtrlCtx *ctrl_ctx, D_Msg *msg, D
   }
   
   //- rjf: out of queued up demon events -> clear event arena
+  log_infof("out_of_queued_events: %d\n", d_ctrl_state->first_dmn_event_node == 0);
   if(d_ctrl_state->first_dmn_event_node == 0)
   {
     d_ctrl_state->free_dmn_event_node = 0;
@@ -5154,6 +5187,16 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   D_Entity *target_process_entity = d_entity_from_handle(entity_ctx, target_process);
   U64 spoof_ip_vaddr = 911;
   log_infof("d_ctrl_thread__run:\n{\n");
+  LogInfoNamedBlockF("run_inputs")
+  {
+    log_infof("target_thread:          [0x%I64x]\n", target_thread.dmn_handle.u64[0]);
+    log_infof("target_process:         [0x%I64x]\n", target_process.dmn_handle.u64[0]);
+    log_infof("target_process_entity:  [0x%I64x]\n", target_process_entity->handle.dmn_handle.u64[0]);
+    log_infof("target_process_arch:    %S\n", string_from_arch(target_process_entity->arch));
+    log_infof("run_flags:              0x%I64x\n", (U64)msg->run_flags);
+    log_infof("user_bp_count:          %I64u\n", msg->user_bps.count);
+    log_infof("trap_count:             %I64u\n", msg->traps.count);
+  }
   
   //////////////////////////////
   //- rjf: gather all initial breakpoints
@@ -5191,6 +5234,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
     }
     d_ctrl_thread__eval_scope_end(eval_scope);
   }
+  log_infof("user_traps_count: %I64u\n", user_traps.trap_count);
   
   //////////////////////////////
   //- rjf: read initial stack-pointer-check value
@@ -5272,6 +5316,8 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         }
       }
     }
+    log_infof("stuck_thread_count: %I64u\n", stuck_threads.count);
+    log_infof("target_thread_is_on_user_bp_and_trap_net_trap: %d\n", target_thread_is_on_user_bp_and_trap_net_trap);
     
     // rjf: actually step stuck threads
     for(DMN_HandleNode *node = stuck_threads.first;
@@ -5292,8 +5338,18 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         {
           run_ctrls.single_step_thread = thread;
         }
+        LogInfoNamedBlockF("stuck_thread_run_ctrls")
+        {
+          log_infof("thread:                    [0x%I64x]\n", thread.u64[0]);
+          log_infof("thread_pre_rip:            0x%I64x\n", thread_pre_rip);
+          log_infof("thread_post_rip:           0x%I64x\n", thread_post_rip);
+          log_infof("single_step_thread:        [0x%I64x]\n", run_ctrls.single_step_thread.u64[0]);
+          log_infof("run_entities_are_unfrozen: %d\n", run_ctrls.run_entities_are_unfrozen);
+          log_infof("run_entity_count:          %I64u\n", run_ctrls.run_entity_count);
+        }
         DMN_Event *event = d_ctrl_thread__next_dmn_event(scratch.arena, ctrl_ctx, msg, &run_ctrls, 0);
         thread_post_rip = dmn_rip_from_thread(thread);
+        log_infof("stuck_thread_event_kind: %S\n", dmn_event_kind_string_table[event->kind]);
         switch(event->kind)
         {
           default:{}break;
@@ -5320,7 +5376,6 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       }
     }
   }
-  
   //////////////////////////////
   //- rjf: gather frozen threads
   //
@@ -5342,6 +5397,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       }
     }
   }
+  log_infof("frozen_thread_count: %I64u\n", frozen_threads.count);
   
   //////////////////////////////
   //- rjf: resolve trap net
@@ -5362,6 +5418,12 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   {
     dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &joined_traps, &user_traps);
     dmn_trap_chunk_list_concat_shallow_copy(scratch.arena, &joined_traps, &trap_net_traps);
+  }
+  LogInfoNamedBlockF("trap_counts")
+  {
+    log_infof("user_traps:     %I64u\n", user_traps.trap_count);
+    log_infof("trap_net_traps: %I64u\n", trap_net_traps.trap_count);
+    log_infof("joined_traps:   %I64u\n", joined_traps.trap_count);
   }
   
   //////////////////////////////
@@ -5393,6 +5455,8 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       {
         trap_list = &user_traps;
       }
+      log_infof("spoof_mode: %d\n", spoof_mode);
+      log_infof("active_trap_count: %I64u\n", trap_list->trap_count);
       
       //////////////////////////
       //- rjf: choose spoof
@@ -5402,6 +5466,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       {
         run_spoof = &spoof;
       }
+      log_infof("run_spoof: %d\n", run_spoof != 0);
       
       //////////////////////////
       //- rjf: setup run controls
@@ -5424,6 +5489,15 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         }
       }
       run_ctrls.traps = *trap_list;
+      LogInfoNamedBlockF("run_loop_ctrls")
+      {
+        log_infof("run_loop_idx:              %I64u\n", run_loop_idx);
+        log_infof("priority_thread:           [0x%I64x]\n", run_ctrls.priority_thread.u64[0]);
+        log_infof("ignore_previous_exception: %d\n", run_ctrls.ignore_previous_exception);
+        log_infof("run_entity_count:          %I64u\n", run_ctrls.run_entity_count);
+        log_infof("run_entities_unfrozen:     %d\n", run_ctrls.run_entities_are_unfrozen);
+        log_infof("trap_count:                %I64u\n", run_ctrls.traps.trap_count);
+      }
       
       //////////////////////////
       //- rjf: get next run-related event
@@ -5527,12 +5601,20 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           }
         }break;
       }
+      log_infof("hard_stop: %d\n", hard_stop);
+      log_infof("hard_stop_cause: %d\n", hard_stop_cause);
+      log_infof("use_stepping_logic: %d\n", use_stepping_logic);
       
       //////////////////////////
       //- rjf: on launches, detect entry points, place traps
       //
       if(msg->run_flags & D_RunFlag_StopOnEntryPoint && !launch_done_first_module && event->kind == DMN_EventKind_HandshakeComplete)
       {
+        LogInfoNamedBlockF("entry_point_detection")
+        {
+          log_infof("event_process: [0x%I64x]\n", event->process.u64[0]);
+          log_infof("event_thread:  [0x%I64x]\n", event->thread.u64[0]);
+        }
         launch_done_first_module = 1;
         Access *access = access_open();
         
@@ -5550,8 +5632,10 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         B32 entries_found = 0;
         if(!entries_found)
         {
+          LogInfoNamedBlockF("entry_points_from_msg")
           for(String8Node *n = msg->entry_points.first; n != 0; n = n->next)
           {
+            log_infof("try_name: %S\n", n->string);
             U32 procedure_id = 0;
             {
               String8 name = n->string;
@@ -5642,8 +5726,10 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         //- rjf: add traps for all custom user entry points
         if(!entries_found)
         {
+          LogInfoNamedBlockF("entry_points_from_user_config")
           for(String8Node *n = d_ctrl_state->user_entry_points.first; n != 0; n = n->next)
           {
+            log_infof("try_name: %S\n", n->string);
             U32 procedure_id = 0;
             {
               String8 name = n->string;
@@ -5660,6 +5746,8 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
             if(voff != 0)
             {
               DMN_Trap trap = {process->handle.dmn_handle, module_base_vaddr + voff};
+              log_infof("found_voff: 0x%I64x\n", voff);
+              log_infof("entry_trap: {process:[0x%I64x], vaddr:0x%I64x}\n", trap.process.u64[0], trap.vaddr);
               dmn_trap_chunk_list_push(scratch.arena, &entry_traps, 256, &trap);
               break;
             }
@@ -5797,6 +5885,8 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           use_stepping_logic = 0;
         }
       }
+      log_infof("exception_stop: %d\n", exception_stop);
+      log_infof("hit_spoof: %d\n", hit_spoof);
       
       //- rjf: handle spoof hit
       if(hit_spoof)
@@ -5923,6 +6013,9 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         
         log_infof("user_breakpoint_hit: %i\n", hit_user_bp);
         log_infof("entry_point_hit: %i\n", hit_entry);
+        log_infof("trap_net_breakpoint_hit: %i\n", hit_trap_net_bp);
+        log_infof("conditional_breakpoint_filtered: %i\n", hit_conditional_bp_but_filtered);
+        log_infof("hit_trap_flags: 0x%I64x\n", (U64)hit_trap_flags);
         temp_end(temp);
       }
       
@@ -5967,6 +6060,8 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           }
         }
       }
+      log_infof("cond_bp_single_step_stop: %d\n", cond_bp_single_step_stop);
+      log_infof("cond_bp_single_step_stop_cause: %d\n", cond_bp_single_step_stop_cause);
       
       //- rjf: hit entry points on *any thread* cause a stop, if this msg says as such
       B32 entry_stop = 0;
@@ -5975,6 +6070,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         entry_stop = 1;
         use_stepping_logic = 0;
       }
+      log_infof("entry_stop: %d\n", entry_stop);
       
       //- rjf: user breakpoints on *any thread* cause a stop
       B32 user_bp_stop = 0;
@@ -5983,6 +6079,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
         user_bp_stop = 1;
         use_stepping_logic = 0;
       }
+      log_infof("user_bp_stop: %d\n", user_bp_stop);
       
       //- rjf: trap net on off-target threads are ignored
       B32 step_past_trap_net = 0;
@@ -5994,6 +6091,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           use_stepping_logic = 0;
         }
       }
+      log_infof("step_past_trap_net: %d\n", step_past_trap_net);
       
       //- rjf: trap net on on-target threads trigger trap net logic
       B32 use_trap_net_logic = 0;
@@ -6004,6 +6102,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           use_trap_net_logic = 1;
         }
       }
+      log_infof("use_trap_net_logic: %d\n", use_trap_net_logic);
       
       //- rjf: trap net logic: stack pointer check
       B32 stack_pointer_matches = 0;
@@ -6011,7 +6110,9 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
       {
         U64 sp = dmn_rsp_from_thread(target_thread.dmn_handle);
         stack_pointer_matches = (sp == sp_check_value);
+        log_infof("trap_net_sp: 0x%I64x\n", sp);
       }
+      log_infof("stack_pointer_matches: %d\n", stack_pointer_matches);
       
       //- rjf: trap net logic: single step after hit
       B32 single_step_stop = 0;
@@ -6057,6 +6158,8 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           }
         }
       }
+      log_infof("single_step_stop: %d\n", single_step_stop);
+      log_infof("single_step_stop_cause: %d\n", single_step_stop_cause);
       
       //- rjf: trap net logic: begin spoof mode
       B32 begin_spoof_mode = 0;
@@ -6075,6 +6178,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           log_infof("spoof:{process:[0x%I64x], thread:[0x%I64x], vaddr:0x%I64x, new_ip_value:0x%I64x}\n", spoof.process.u64[0], spoof.thread.u64[0], spoof.vaddr, spoof.new_ip_value);
         }
       }
+      log_infof("begin_spoof_mode: %d\n", begin_spoof_mode);
       
       //- rjf: trap net logic: save stack pointer
       B32 save_stack_pointer = 0;
@@ -6090,6 +6194,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           }
         }
       }
+      log_infof("save_stack_pointer: %d\n", save_stack_pointer);
       
       //- rjf: trap net logic: end stepping
       B32 trap_net_stop = 0;
@@ -6105,6 +6210,7 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           }
         }
       }
+      log_infof("trap_net_stop: %d\n", trap_net_stop);
       
       //}
       //
@@ -6151,6 +6257,8 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
           }
         }
       }
+      log_infof("step_past_trap_net_stop: %d\n", step_past_trap_net_stop);
+      log_infof("step_past_trap_net_stop_cause: %d\n", step_past_trap_net_stop_cause);
       
       //- rjf: loop exit condition
       D_EventCause stage_stop_cause = D_EventCause_Null;
@@ -6201,6 +6309,18 @@ d_ctrl_thread__run(DMN_CtrlCtx *ctrl_ctx, D_Msg *msg)
   //
   if(stop_event != 0)
   {
+    LogInfoNamedBlockF("run_stop_event")
+    {
+      log_infof("stop_cause:          %d\n", stop_cause);
+      log_infof("event_kind:          %S\n", dmn_event_kind_string_table[stop_event->kind]);
+      log_infof("exception_kind:      %S\n", dmn_exception_kind_string_table[stop_event->exception_kind]);
+      log_infof("process:             [0x%I64x]\n", stop_event->process.u64[0]);
+      log_infof("thread:              [0x%I64x]\n", stop_event->thread.u64[0]);
+      log_infof("code:                0x%x\n", stop_event->code);
+      log_infof("address:             0x%I64x\n", stop_event->address);
+      log_infof("instruction_pointer: 0x%I64x\n", stop_event->instruction_pointer);
+      log_infof("user_data:           0x%I64x\n", stop_event->user_data);
+    }
     D_EventList evts = {0};
     D_Event *event = d_event_list_push(scratch.arena, &evts);
     event->kind = D_EventKind_Stopped;
